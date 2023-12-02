@@ -1,0 +1,181 @@
+---
+title: "Nike_State_Strategy"
+output: html_notebook
+---
+
+```{r}
+# Load necessary libraries
+library(tidyverse) # for dataframe manipulation
+library(syuzhet)  # for sentiment analysis
+library(ggplot2) # for visualization
+library(tm) # for text mining
+
+# Read the CSV file containing tweets data
+tweets <- read.csv("justdoit_tweets_5000.csv", fileEncoding = "UTF-8")
+
+# Selecting the necessary columns for processing
+tweets_selected <- tweets %>%
+# Select specific columns for analysis
+  select(tweet_created_at, tweet_favorite_count, tweet_full_text, tweet_id,
+         tweet_in_reply_to_screen_name, tweet_in_reply_to_status_id, tweet_retweet_count,
+         user_favourites_count, user_followers_count, user_id, user_location,
+         user_location_us, user_verified)
+
+print(head(tweets_selected))
+
+# Adding a Sentiment column to dataset by calculating the Sentiment score using Syuzhet
+tweets_selected$Sentiment <- get_sentiment(tweets_selected$tweet_full_text, method="syuzhet")
+
+print(head(tweets_selected$Sentiment))
+
+# Reordering columns
+tweets_final <- tweets_selected %>%
+# Select specific columns for analysis
+  select(-tweet_full_text, -tweet_favorite_count, -user_location_us, -Sentiment,
+         tweet_full_text, tweet_favorite_count, user_location_us, Sentiment)
+
+# Read the CSV file containing sentiment analysis results
+tweets <- read.csv("justdoit_sentiment.csv", fileEncoding = "UTF-8")
+
+# Function to remove words with an apostrophe
+remove_apostrophe_words <- function(text) {
+  words <- unlist(strsplit(text, " "))
+  words_without_apostrophe <- grep("['’]", words, value = TRUE, invert = TRUE)
+  paste(words_without_apostrophe, collapse = " ")
+}
+
+# Apply the function to tweet_full_text
+tweets$tweet_full_text <- sapply(tweets$tweet_full_text, remove_apostrophe_words)
+
+# Read the CSV file containing stopwords
+stopwords_data <- read.csv("stopwords.csv", header = FALSE, stringsAsFactors = FALSE)
+
+# Flatten the data frame to a vector
+stopwords_custom <- unlist(stopwords_data)
+
+# Remove quotes from each word
+stopwords_custom <- gsub('"', '', stopwords_custom)
+
+# Convert stopwords to lower case
+stopwords_custom <- tolower(stopwords_custom)
+
+# Ensure no empty lines are included
+stopwords_custom <- stopwords_custom[stopwords_custom != ""]
+
+# Define cleaning function to handle for irrelevant content
+clean_text <- function(text) {
+    text <- tolower(text)  # Convert to lower case
+    text <- removePunctuation(text)  # Remove punctuation
+    text <- removeNumbers(text)  # Remove numbers
+    # Combining default English stopwords with my custom stopwords
+    all_stopwords <- c(stopwords("en"), stopwords_custom)
+    text <- removeWords(text, all_stopwords)  # Remove common and custom stopwords
+    text <- stripWhitespace(text)  # Remove extra white spaces
+    return(text)
+}
+
+# Apply the cleaning function to the tweets
+tweets$tweet_full_text <- sapply(tweets$tweet_full_text, clean_text)
+
+print(head(tweets$tweet_full_text))
+
+# Function definition to find most frequent words
+get_most_frequent_words <- function(tweets_text) {
+  word_list <- unlist(strsplit(tweets_text, " "))
+  word_list <- word_list[word_list != ""]  # Remove empty elements
+  word_freq <- table(word_list)
+  word_freq <- sort(word_freq, decreasing = TRUE)
+  return(word_freq)
+}
+
+# Apply the function to positive and negative tweets
+positive_tweets <- tweets[tweets$Sentiment > 0, ]
+negative_tweets <- tweets[tweets$Sentiment < 0, ]
+
+# Get most frequent words for each state for positive and negative tweets
+positive_words_by_state <- aggregate(tweet_full_text ~ user_location_us, data = positive_tweets, FUN = function(x) get_most_frequent_words(paste(x, collapse = " ")))
+negative_words_by_state <- aggregate(tweet_full_text ~ user_location_us, data = negative_tweets, FUN = function(x) get_most_frequent_words(paste(x, collapse = " ")))
+
+print(head(positive_words_by_state))
+print(head(negative_words_by_state))
+
+# Function to extract top frequently occuring 5 words with their frequency
+extract_top_words_with_freq <- function(freq_table, top_n = 5) {
+    top_words <- head(sort(freq_table, decreasing = TRUE), top_n)
+    words_with_freq <- paste(names(top_words), "(", top_words, ")", sep = "")
+    return(words_with_freq)
+}
+
+# Apply the function to positive and negative tweets for each state
+positive_words_by_state$top_words_with_freq <- lapply(positive_words_by_state$tweet_full_text, extract_top_words_with_freq)
+negative_words_by_state$top_words_with_freq <- lapply(negative_words_by_state$tweet_full_text, extract_top_words_with_freq)
+
+# Convert the top words lists into a readable format
+positive_words_by_state$top_words_with_freq <- sapply(positive_words_by_state$top_words_with_freq, paste, collapse = ", ")
+negative_words_by_state$top_words_with_freq <- sapply(negative_words_by_state$top_words_with_freq, paste, collapse = ", ")
+
+print(head(positive_words_by_state))
+print(head(negative_words_by_state))
+
+# Save the most frequently occuring positive sentiment words by state table to a CSV file
+write.csv(positive_words_by_state[, c("user_location_us", "top_words_with_freq")], "top_positive_words_by_state_sentiments.csv", row.names = FALSE)
+
+# Save the most frequently occuring negative  sentiment words by state table to a CSV file
+write.csv(negative_words_by_state[, c("user_location_us", "top_words_with_freq")], "top_negative_words_by_state_sentiments.csv", row.names = FALSE)
+
+# Calculate average sentiment by state and filter only states with at least 75 tweets
+average_sentiment_by_state <- tweets %>%
+  group_by(user_location_us) %>%
+  filter(n() >= 75) %>%  # Ensure at least 75 tweets per state for relevance
+  summarise(average_sentiment = mean(Sentiment, na.rm = TRUE)) %>%
+# Arrange data in descending order of average_sentiment
+  arrange(desc(average_sentiment))
+
+# Get the top 5 and bottom 5 states by average sentiment
+top_5_states <- head(average_sentiment_by_state, 5)
+bottom_5_states <- tail(average_sentiment_by_state, 5)
+
+# Print the results
+print("Top 5 States by Average Brand Sentiment")
+print(top_5_states)
+print("Bottom 5 States by Average Brand Sentiment")
+print(bottom_5_states)
+
+# Michigan and Georgia were some key states identified in our sentiment analysis
+
+# Target states to analyze for Nike's targeted Social Media campaign
+states <- c("Michigan", "Georgia")
+
+# Loop through each state in the vector and create charts
+for(state in states) {
+  # Filter data for the current state
+  positive_state <- subset(positive_words_by_state, user_location_us == state)
+  negative_state <- subset(negative_words_by_state, user_location_us == state)
+
+  # Prepare data for the chart
+  prepare_chart_data <- function(data, sentiment) {
+      words_with_freq <- unlist(strsplit(data$top_words_with_freq, ", "))
+      words <- gsub("\\s*\\(.*\\)$", "", words_with_freq)
+      freq <- as.numeric(gsub(".*\\((.*)\\)", "\\1", words_with_freq))
+      return(data.frame(word = words, freq = freq, sentiment = sentiment))
+  }
+
+  positive_chart_data <- prepare_chart_data(positive_state, "Positive")
+  negative_chart_data <- prepare_chart_data(negative_state, "Negative")
+
+  # Combine positive and negative data
+  combined_chart_data <- rbind(positive_chart_data, transform(negative_chart_data, freq = -freq))
+
+  # Create the tornado chart
+  ggplot(combined_chart_data, aes(x = word, y = freq, fill = sentiment)) +
+      geom_bar(stat = "identity", position = "identity") +
+      coord_flip() +
+      labs(title = paste("Word Frequencies in Positive and Negative Tweets for", state),
+           x = "Words",
+           y = "Frequency") +
+      scale_fill_manual(values = c("Positive" = "blue", "Negative" = "red")) +
+      theme_minimal()
+# Save the chart as an image file
+  ggsave(paste0("tornado_chart_", state, ".jpeg"))
+}
+```
